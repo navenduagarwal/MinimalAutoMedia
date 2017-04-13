@@ -1,10 +1,17 @@
 package com.sparshik.minimalautomedia;
 
+import android.media.MediaMetadata;
+import android.media.MediaPlayer;
+import android.media.browse.MediaBrowser;
 import android.media.browse.MediaBrowser.MediaItem;
 import android.media.session.MediaSession;
+import android.media.session.PlaybackState;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.service.media.MediaBrowserService;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -66,16 +73,83 @@ import java.util.List;
 public class MyMusicService extends MediaBrowserService {
 
     private MediaSession mSession;
+    private List<MediaMetadata> mMusic;
+    private MediaPlayer mMediaPlayer;
+    private MediaMetadata mCurrentTrack;
 
     @Override
     public void onCreate() {
         super.onCreate();
 
+        // Create entries for two songs
+        mMusic = new ArrayList<>();
+        mMusic.add(new MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, "https://www.mcgill.ca/counselling/files/counselling/a_moment_to_reflect_1.mp3")
+                .putString(MediaMetadata.METADATA_KEY_TITLE, "Music 1")
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, "Artist 1")
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, 30000)
+                .build());
+
+        mMusic.add(new MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, "https://www.mcgill.ca/counselling/files/counselling/ocean_imagery.mp3")
+                .putString(MediaMetadata.METADATA_KEY_TITLE, "Music 2")
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, "Artist 2")
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, 30000)
+                .build());
+
+        // Responsible for playing back the music
+        mMediaPlayer = new MediaPlayer();
+
+        //Media Session Object
         mSession = new MediaSession(this, "MyMusicService");
-        setSessionToken(mSession.getSessionToken());
+        //Callbacks to handle events from the user (play, pause, search)
         mSession.setCallback(new MediaSessionCallback());
         mSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS |
                 MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
+        mSession.setActive(true);
+        setSessionToken(mSession.getSessionToken());
+
+    }
+
+    //Helper method to construct the PlaybackSate we need
+    private PlaybackState buildState(int state) {
+        // Hard code the current position and length of track to simplify the code
+        return new PlaybackState.Builder().setActions(
+                PlaybackState.ACTION_PLAY | PlaybackState.ACTION_SKIP_TO_PREVIOUS
+                        | PlaybackState.ACTION_SKIP_TO_NEXT
+                        | PlaybackState.ACTION_PLAY_FROM_MEDIA_ID
+                        | PlaybackState.ACTION_PLAY_PAUSE)
+                .setState(state, mMediaPlayer.getCurrentPosition(), 1, SystemClock.elapsedRealtime())
+                .build();
+    }
+
+    //Helper method to start playing a track
+    private void handlePlay() {
+        //handle the mediasession state
+        mSession.setPlaybackState(buildState(PlaybackState.STATE_PLAYING));
+        //Update the session with the track meta-data
+        mSession.setMetadata(mCurrentTrack);
+
+        try {
+            //Pass the music url to the MediaPlayer
+            mMediaPlayer.reset();
+            mMediaPlayer.setDataSource(MyMusicService.this,
+                    Uri.parse(mCurrentTrack.getDescription().getMediaId()));
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        //Set a callback for when the music is ready to be played
+        mMediaPlayer.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+            @Override
+            public void onPrepared(MediaPlayer mp) {
+                //Start the playback now that the track is ready
+                mp.start();
+            }
+        });
+
+        //Tell the mediaplayer to start downloading the tracl
+        mMediaPlayer.prepareAsync();
     }
 
     @Override
@@ -85,53 +159,55 @@ public class MyMusicService extends MediaBrowserService {
 
     @Override
     public BrowserRoot onGetRoot(String clientPackageName, int clientUid, Bundle rootHints) {
+        // Perform any checks here to only allow Android Auto, Android Wear, etc to get access
         return new BrowserRoot("root", null);
     }
 
+    //Build up a tree of all available music from the list prepared earlier
     @Override
-    public void onLoadChildren(final String parentMediaId, final Result<List<MediaItem>> result) {
-        result.sendResult(new ArrayList<MediaItem>());
+    public void onLoadChildren(final String parentMediaId, final Result<List<MediaBrowser.MediaItem>> result) {
+        List<MediaBrowser.MediaItem> list = new ArrayList<>();
+        for (MediaMetadata m : mMusic) {
+            list.add(new MediaBrowser.MediaItem(m.getDescription(), MediaItem.FLAG_PLAYABLE));
+        }
+        result.sendResult(list);
     }
 
     private final class MediaSessionCallback extends MediaSession.Callback {
+        // Play button pressed by the user
         @Override
         public void onPlay() {
+            if (mCurrentTrack == null) {
+                //No current song is selected, so pick the first one and start playing it
+                mCurrentTrack = mMusic.get(0);
+                handlePlay();
+            } else {
+                //Current song is ready but paused, so start playing the music
+                mMediaPlayer.start();
+                //Update the UI to show we are playing
+                mSession.setPlaybackState(buildState(PlaybackState.STATE_PLAYING));
+            }
         }
 
-        @Override
-        public void onSkipToQueueItem(long queueId) {
-        }
-
-        @Override
-        public void onSeekTo(long position) {
-        }
-
+        //Search through entire music library
         @Override
         public void onPlayFromMediaId(String mediaId, Bundle extras) {
+            for (MediaMetadata item : mMusic) {
+                if (item.getDescription().getMediaId().equals(mediaId)) {
+                    mCurrentTrack = item;
+                    break;
+                }
+            }
+            handlePlay();
         }
 
+        //Pause button pressed by the user
         @Override
         public void onPause() {
-        }
-
-        @Override
-        public void onStop() {
-        }
-
-        @Override
-        public void onSkipToNext() {
-        }
-
-        @Override
-        public void onSkipToPrevious() {
-        }
-
-        @Override
-        public void onCustomAction(String action, Bundle extras) {
-        }
-
-        @Override
-        public void onPlayFromSearch(final String query, final Bundle extras) {
+            //Pause the music playback
+            mMediaPlayer.pause();
+            //Update the UI to show we are paused
+            mSession.setPlaybackState(buildState(PlaybackState.STATE_PAUSED));
         }
     }
 }
